@@ -1,59 +1,47 @@
 from flask import Blueprint, request
-from werkzeug.security import generate_password_hash
-from app.models import User, Sketchbook, db
-import jwt
-from ..config import Configuration
-from ..util import token_required
 from datetime import datetime
-
+from ..config import fb, db
+from firebase_admin import auth
 
 bp = Blueprint('user', __name__, url_prefix='')
-
-# TODO move creation of user's sketchbook to separate function
-
 
 @bp.route('/users', methods=['POST'])
 def registration():
     data = request.json
 
-    # check if username or email are already taken
+    # check if email is already taken
     # send error msg if so
-    foundUsername = User.query.filter(
-        User.username == data['username']).first()
-    if foundUsername and foundUsername.username == data['username']:
-        return {'message': 'Username already in use'}, 403
-
-    foundEmail = User.query.filter(
-        User.email == data['email']).first()
-    if foundEmail and foundEmail.email == data['email']:
+    found_email = auth.get_user_by_email(data['email'])
+    if found_email:
         return {'message': 'Email already in use'}, 403
 
-    hashedPassword = generate_password_hash(data["hashed_password"])
-    newUser = User(username=data['username'],
-                   email=data['email'],
-                   hashed_password=hashedPassword)
-    db.session.add(newUser)
-    db.session.commit()
-    newSketchbook = Sketchbook(owner_id=newUser.id,
-                               title=f"{newUser.username}'s sketchbook",
-                               timestamp=datetime.now())
-    db.session.add(newSketchbook)
-    db.session.commit()
-    token = jwt.encode({'user_id': newUser.id}, Configuration.SECRET_KEY)
+    new_user = auth.create_user(
+    email=data['email'],
+    email_verified=False,
+    password=data['hashed_password'],
+    display_name=data['username'])
+
+    sketchbook_data = {
+        u'owner_id': u'{new_user.id}',
+        u'title': f"{new_user.username}'s sketchbook",
+        u'timestamp': datetime.now()
+    }
+
+    update_time, sketchbook_ref = db.collection(u'sketchbooks').add(sketchbook_data)
+
     return {
-        'token': token.decode('UTF-8'),
-        'currentUserId': newUser.id,
+        'currentUserId': new_user.id,
     }
 
 
 @bp.route('/users', methods=['PUT'])
-@token_required
 def userUpdate(current_user):
     data = request.json
-    avaUrl = data['avatarUrl']
-    updateUser = User.query.filter(User.id == current_user.id).first()
-    updateUser.avatarurl = avaUrl
-    db.session.commit()
+
+    user = auth.update_user(
+        uid = current_user.id,
+        photo_url=data['avatarUrl'])
+
     return {'message': 'avatar updated'}
 
 
@@ -62,13 +50,13 @@ def login():
     data = request.json
     userEmail = data['email']
     userPassword = data['password']
-    userToLogin = User.query.filter_by(email=userEmail).first()
-    if userToLogin and userToLogin.check_password(userPassword):
-        token = jwt.encode({'user_id': userToLogin.id},
-                           Configuration.SECRET_KEY)
+
+    user = auth.sign_in_with_email_and_password(userEmail, userPassword)
+
+    if user:
         return {
-            'token': token.decode('UTF-8'),
-            'currentUserId': userToLogin.id,
+            'token': user.idToken,
+            'currentUserId': user.id,
         }
     else:
         return {'message': 'Invalid user credentials'}, 401
