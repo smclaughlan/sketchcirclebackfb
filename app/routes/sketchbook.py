@@ -3,29 +3,44 @@ from sqlalchemy import and_
 from app.models import Follow, Goal, User, Sketchbook, Post, Datapoint, db
 from ..util import token_required
 from datetime import datetime
+from ..config import fb, db
 
 bp = Blueprint("sketchbook", __name__, "")
 
-# TODO Separate follows from getting sketchbooks
-
-
 @bp.route("/sketchbooks")
 def getBasicSketchbooks():
-    sketchbooks = Sketchbook.query.order_by(Sketchbook.timestamp).all()
-    sketchbooks.reverse()
+    # Get all the sketchbooks and sort them by timestamp.
+    # sketchbooks = Sketchbook.query.order_by(Sketchbook.timestamp).all()
+    sketchbooks = db.collection(u"sketchbooks").stream()
+    sketchbooksDocs = list()
+    for skb in sketchbooks:
+        skbId = skb.id
+        new_skb = skb.to_dict()
+        new_skb['id'] = skbId
+        sketchbooksDocs.append(new_skb)
+    # TODO Is reversing necessary anymore?
+    # sketchbooks.reverse()
     sketchbookList = list()
-    for book in sketchbooks:
+    for book in sketchbooksDocs:
         sketchbookDict = dict()
         sketchbookDict[book.id] = {"owner_id": book.owner_id,
                                    "sketchbook_id": book.id,
-                                   "avatar": book.sketchbooktouser.avatarurl,
+                                #    "avatar": book.sketchbooktouser.avatarurl,
                                    "title": book.title,
                                    "timestamp": str(book.timestamp)}
         sketchbookList.append(sketchbookDict)
 
-    follows = Follow.query.all()
-    followList = []
+    # follows = Follow.query.all()
+    follows = db.collection(u"follows").stream()
+    followDocs = list()
     for follow in follows:
+        followId = follow.id
+        new_follow = follow.to_dict()
+        new_follow['id'] = followId
+        followDocs.append(new_follow)
+
+    followList = []
+    for follow in followDocs:
         followSublist = [follow.follower_id, follow.sketchbook_id]
         followList.append(followSublist)
     returnDict = dict()
@@ -36,49 +51,33 @@ def getBasicSketchbooks():
 
 
 @bp.route("/posts/<int:postId>", methods=["DELETE"])
-@token_required
-def deletePost(current_user, postId):
-    postToDelete = Post.query.filter(Post.id == postId).first()
-    if postToDelete.user_id == current_user.id:
-        db.session.delete(postToDelete)
-        db.session.commit()
+def deletePost(current_user_id, post_id):
+    db.collection(u'posts').document(f'{post_id}').delete()
     return {"message": "post deleted"}
 
 
 @bp.route("/posts/<int:postId>", methods=["PUT"])
-@token_required
 def updatePost(current_user, postId):
     data = request.json
-    postToUpdate = Post.query.filter(Post.id == postId).first()
-    if postToUpdate.user_id == current_user.id:
-        postToUpdate.body = data['body']
-        db.session.commit()
+    db.collection(u'posts').document(f'{postId}').set(data)
     return {"message": "post updated"}
 
 
 @bp.route("/sketchbooks/<int:sk_id>/follow", methods=["POST"])
-@token_required
-def addFollow(current_user, sk_id):
-    newFollow = Follow(
-        sketchbook_id=sk_id,
-        follower_id=current_user.id
-    )
-    db.session.add(newFollow)
-    db.session.commit()
-    returnDict = {newFollow.sketchbook_id: True}
+def addFollow(current_user_id, sk_id):
+    new_follow = {
+        sketchbook_id: sk_id,
+        follower_id: current_user_id
+    }
+    update_time, follow_ref = db.collection(u'follows').add(new_follow)
+    returnDict = {new_follow.sketchbook_id: True}
     return returnDict
 
 
-@bp.route("/sketchbooks/<int:sk_id>/follow", methods=["DELETE"])
-@token_required
-def deleteFollow(current_user, sk_id):
-    followToDelete = Follow.query.filter(and_(
-        (Follow.follower_id == current_user.id), (Follow.sketchbook_id == sk_id))).first()
-    db.session.delete(followToDelete)
-    db.session.commit()
-    return {"sketchbook_id": followToDelete.sketchbook_id}
-
-# TODO Separate goals w/ datapoints route
+@bp.route("/sketchbooks/<int:follow_id>/follow", methods=["DELETE"])
+def deleteFollow(current_user, follow_id):
+    db.collection(u'follows').document(f'{follow_id}').delete()
+    return {"follow_id": follow_id}
 
 
 @bp.route("/sketchbooks/<int:sk_id>")
