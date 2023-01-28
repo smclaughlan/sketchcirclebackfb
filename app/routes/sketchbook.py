@@ -82,27 +82,39 @@ def deleteFollow(current_user, follow_id):
 
 @bp.route("/sketchbooks/<int:sk_id>")
 def getSketchbookPosts(sk_id):
-    posts = Post.query.filter(Post.sketchbook_id == sk_id).all()
+    # Get posts where sketchbook_id == sk_id
+    posts = db.collection(u'posts').where(u'sketchbook_id', u'==', f'{sk_id}').stream()
+
     postsDict = dict()
     for post in posts:
-        skbId = post.sketchbook_id
         postId = post.id
-        if not skbId in postsDict.keys():
+        new_post = post.to_dict()
+        skbId = new_post['sketchbook_id']
+        new_post['id'] = postId
+        if skbId not in postsDict.keys():
             postsDict[skbId] = {postId: None}
-        postsDict[skbId][postId] = post.dictify()
+        postsDict[skbId][postId] = new_post
 
-    goals = Goal.query.filter(Goal.Sketchbook_id == sk_id).all()
+    # Get goals where sketchbook_id == sk_id
+    goals = db.collection(u'posts').where(u'sketchbook_id', u'==', f'{sk_id}').stream()
     goalsDict = dict()
     datapointsDict = dict()
     for goal in goals:
-        if not goal.Sketchbook_id in goalsDict.keys():
-            goalsDict[goal.Sketchbook_id] = {goal.id: None}
-        goalsDict[goal.Sketchbook_id][goal.id] = goal.dictify()
-        datapoints = Datapoint.query.filter(Datapoint.goal_id == goal.id).all()
+        goalId = goal.id
+        new_goal = goal.to_dict()
+        new_goal['id'] = goalId
+        if new_goal.sketchbook_id not in goalsDict.keys():
+            goalsDict[new_goal.sketchbook_id] = {new_goal.id: None}
+        goalsDict[new_goal.sketchbook_id][new_goal.id] = new_goal
+        # Get datapoints for this goal by datapoint.goal_id == new_goal.id
+        datapoints = db.collection(u'datapoints').where(u'goal_id', u'==', f'{new_goal.id}').stream()
         for datapoint in datapoints:
-            if not datapoint.goal_id in datapointsDict.keys():
-                datapointsDict[datapoint.goal_id] = {datapoint.id: None}
-            datapointsDict[datapoint.goal_id][datapoint.id] = datapoint.dictify()
+            datapointId = datapoint.id
+            new_datapoint = datapoint.to_dict()
+            new_datapoint['id'] = datapointId
+            if new_datapoint.goal_id not in datapointsDict.keys():
+                datapointsDict[new_datapoint.goal_id] = {new_datapoint.id: None}
+            datapointsDict[new_datapoint.goal_id][new_datapoint.id] = new_datapoint
 
     returnDict = {
         'posts': postsDict,
@@ -113,29 +125,21 @@ def getSketchbookPosts(sk_id):
 
 
 @bp.route("/sketchbooks/<int:sk_id>", methods=["POST"])
-@token_required
 def addPost(current_user, sk_id):
     data = request.json
 
-    newPost = Post(
-        user_id=current_user.id,
-        sketchbook_id=sk_id,
-        body=data['msgBody'],
-        timestamp=datetime.now()
-    )
-    db.session.add(newPost)
-    db.session.commit()
+    newPost = {
+        'user_id': current_user.id,
+        'sketchbook_id': sk_id,
+        'body': data['msgBody'],
+        'timestamp': datetime.now()
+    }
 
-    skb = Sketchbook.query.filter(Sketchbook.id == sk_id).first()
-    skb.timestamp = datetime.now()
-    db.session.commit()
+    update_time, post_ref = db.collection(u'posts').add(newPost)
     return getSketchbookPosts(sk_id)
-
-# TODO move past goal deleting to separate function
 
 
 @bp.route("/goal", methods=["POST"])
-@token_required
 def addGoal(current_user):
     data = request.json
     splitTargetDate = data['targetDate'].split('-')
@@ -144,40 +148,44 @@ def addGoal(current_user):
     datetimeOfTarget = datetime.strptime(
         joinedTargetDate, '%Y %m %d')
 
-    userSketchbook = Sketchbook.query.filter(
-        Sketchbook.owner_id == current_user.id).first()
-    newGoal = Goal(
-        owner_id=current_user.id,
-        Sketchbook_id=userSketchbook.id,
-        title=data['title'],
-        description=data['description'],
-        target=data['target'],
-        targetdate=datetimeOfTarget,
-        timestamp=datetime.now()
-    )
-    db.session.add(newGoal)
-    db.session.commit()
+    userSketchbook = db.collection(u'sketchbooks').where(u'owner_id', u'==', f'{current_user.id}').stream()
+    userSkbId = userSketchbook[0].id
+    userSkb = userSketchbook[0].to_dict()
+    userSkb['id'] userSkbId
 
-    # check for goals that have passed finished date, and delete them
-    goalsForCurrUser = Goal.query.filter(
-        Goal.owner_id == current_user.id).all()
-    currDate = datetime.now()
+    newGoal = {
+        'owner_id': current_user.id,
+        'sketchbook_id': userSketchbook.id,
+        'title': data['title'],
+        'description': data['description'],
+        'target': data['target'],
+        'targetdate': datetimeOfTarget,
+        'timestamp': datetime.now()
+    }
+    update_time, goal_ref = db.collection(u'goals').add(newGoal)
+
+    # Check for goals that have passed finished date, and delete them
+    goalsForCurrUser = db.collection('goals').where(u'owner_id', u'==', f'{current_user.id}').stream()
+    goalsList = list()
     for goal in goalsForCurrUser:
+        goalId = goal.id
+        new_goal = goal.to_dict()
+        new_goal['id'] = goalId
+        goalsList.append(new_goal)
+    currDate = datetime.now()
+    for goal in goalsList:
         if goal.targetdate < currDate:
-            datapoints = Datapoint.query.filter(
-                Datapoint.goal_id == goal.id).all()
-            for datapoint in datapoints:
-                db.session.delete(datapoint)
-            db.session.delete(goal)
+            # Delete the datapoints too
+            db.collection(u'datapoints').where(u'goal_id', u'==', f'{goal.id}').delete()
+    db.collection(u'goals').where(u'targetdate', '<', currDate).delete()
 
-    db.session.commit()
 
     returnDict = {
-        newGoal.Sketchbook_id: {
+        newGoal.sketchbook_id: {
             newGoal.id: {
                 'id': newGoal.id,
                 'owner_id': newGoal.owner_id,
-                'sketchbook_id': newGoal.Sketchbook_id,
+                'sketchbook_id': newGoal.sketchbook_id,
                 'title': newGoal.title,
                 'description': newGoal.description,
                 'target': newGoal.target,
@@ -190,16 +198,15 @@ def addGoal(current_user):
 
 
 @bp.route("/goal/newdata", methods=["POST"])
-@token_required
 def addDataPoint(current_user):
     data = request.json
-    newDataPoint = Datapoint(
-        goal_id=data['goalid'],
-        value=data['value'],
-        timestamp=datetime.now()
-    )
-    db.session.add(newDataPoint)
-    db.session.commit()
+    newDataPoint = {
+        'goal_id': data['goal_id'],
+        'value': data['value'],
+        'timestamp': datetime.now()
+    }
+    db.collection(u'datapoints').add(newDataPoint)
+
     returnDict = {
         newDataPoint.goal_id: {
             newDataPoint.id: {
